@@ -93,8 +93,7 @@ handle_call({forward, T, Requestor}, _From, State) ->
     timer:sleep(10),
     chronos:start_timer(motor_ts, stop_motor, T,
                         {gen_server, cast, [?SERVER, stop_motor]}),
-    i2c_servo:setPWM(0, 0, 600),
-    i2c_servo:setPWM(1, 0, 150),
+    motor_forward(),
     sharp:alarm_obstacle(),
     {reply, ok, State#state{requestor=Requestor}};
 
@@ -103,24 +102,21 @@ handle_call({backward, T, Requestor}, _From, State) ->
     timer:sleep(10),
     chronos:start_timer(motor_ts, stop_motor, T,
                         {gen_server, cast, [?SERVER, stop_motor]}),
-    i2c_servo:setPWM(0,0,150),
-    i2c_servo:setPWM(1,0,600),
+    motor_backward(),
     {reply, ok, State#state{requestor=Requestor}};
 
 handle_call({rotate, T, left, Requestor}, _From, State) ->
     timer:sleep(10),
     chronos:start_timer(motor_ts, stop_motor, T,
                         {gen_server, cast, [?SERVER, stop_motor]}),
-    i2c_servo:setPWM(0, 0, 150),
-    i2c_servo:setPWM(1, 0, 150),
+    motor_left(),
     {reply, ok, State#state{requestor=Requestor}};
 
 handle_call({rotate, T, right, Requestor}, _From, State) ->
     timer:sleep(10),
     chronos:start_timer(motor_ts, stop_motor, T,
                         {gen_server, cast, [?SERVER, stop_motor]}),
-    i2c_servo:setPWM(0, 0, 600),
-    i2c_servo:setPWM(1, 0, 600),
+    motor_right(),
     {reply, ok, State#state{requestor=Requestor}};
 
 handle_call(stop, _From, #position{actions=[Next|Actions]}=State) ->
@@ -134,6 +130,22 @@ handle_call(stop, _From, #position{actions=[Next|Actions]}=State) ->
 	    start_action(Action), 
 	    {noreply, S1#position{actions=Rest}}
     end.
+
+motor_right() ->
+    i2c_servo:setPWM(0, 0, 600),
+    i2c_servo:setPWM(1, 0, 600).
+
+motor_left() ->
+    i2c_servo:setPWM(0, 0, 150),
+    i2c_servo:setPWM(1, 0, 150).
+
+motor_backward() ->
+    i2c_servo:setPWM(0,0,150),
+    i2c_servo:setPWM(1,0,600).
+
+motor_forward() ->
+    i2c_servo:setPWM(0, 0, 600),
+    i2c_servo:setPWM(1, 0, 150).
 
 update_state({set, theta, V}, S) ->
     S#state{theta=V}.
@@ -196,54 +208,3 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-motor_forward(T) ->
-    timer:sleep(10),
-    chronos:start_timer(motor_timer, stop_motor, T, {motor, stop, []}),
-    i2c_servo:setPWM(0,0,600),
-    i2c_servo:setPWM(1,0,150),
-    sharp:alarm_obstacle().
-%%    receive
-%%	{alarm_obstacle, true} ->
-%%	    motor_stop(),
-%%	    T2 = now(),
-%%	    trunc(timer:now_diff(T2, T1) * 0.001)
-%%    after
-%%	T ->
-%%	    motor_stop(),
-%%	    T
-%%    end.
-
-motor_rotate(T, left) ->
-    timer:sleep(10),
-    chronos:start_timer(motor_timer, stop_motor, T, {motor, stop, []}),
-    i2c_servo:setPWM(0,0,150),
-    i2c_servo:setPWM(1,0,150);
-motor_rotate(T, right) ->
-    timer:sleep(10),
-    chronos:start_timer(motor_timer, stop_motor, T, {motor, stop, []}),
-    i2c_servo:setPWM(0,0,600),
-    i2c_servo:setPWM(1,0,600).
-
-%% rotate_compass(Degrees, left) ->
-%%     i2c_servo:setPWM(0, 0, 150),
-%%     i2c_servo:setPWM(1, 0, 150),
-%%     compass:rotate_degrees(Degrees, left),
-%%     receive
-%% 	{rotate_degrees, true} ->
-%% 	    stop()
-%%     end;
-%% rotate_compass(Degrees, right) ->
-%%     i2c_servo:setPWM(0, 0, 600),
-%%     i2c_servo:setPWM(1, 0, 600),
-%%     compass:rotate_degrees(Degrees, right),
-%%     receive
-%% 	{rotate_degrees, true} ->
-%% 	    stop()
-%%     end.
-
-motor_stop() ->
-    i2c_servo:setPWM(0,0,0),
-    i2c_servo:setPWM(1,0,0).
-
-%%stop(Channel) ->
-%%    i2c_servo:setPWM(Channel, 0, 0).
