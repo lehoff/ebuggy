@@ -36,15 +36,15 @@ start_link() ->
 
 
 forward(T) ->
-    gen_server:call(?SERVER, {forward, T, self()}, infinity).
+    gen_server:call(?SERVER, {forward, T, self()}).
 
 backward(T) ->
-    gen_server:call(?SERVER, {backward, T, self()}, infinity).
+    gen_server:call(?SERVER, {backward, T, self()}).
 
 rotate(T, left) ->
-    gen_server:call(?SERVER, {rotate, T, left, self()}, infinity);
+    gen_server:call(?SERVER, {rotate, T, left, self()});
 rotate(T, right) ->
-    gen_server:call(?SERVER, {rotate, T, right, self()}, infinity).
+    gen_server:call(?SERVER, {rotate, T, right, self()}).
 
 
 
@@ -72,7 +72,7 @@ init([]) ->
     i2c_servo:init(),
     i2c_servo:setPWMFreq(60),
     {ok, _} = chronos:start_link(motor_ts),
-    {ok, #position{x = 0, y = 0, theta = 0}}.
+    {ok, #state{theta = 0}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -89,32 +89,39 @@ init([]) ->
 %% @end
 %%--------------------------------------------------------------------
 
-handle_call({forward, T}, _From, State) ->
+handle_call({forward, T, Requestor}, _From, State) ->
     timer:sleep(10),
-    chronos:start_timer(motor_timer, stop_motor, T, {motor, stop, []}),
+    chronos:start_timer(motor_ts, stop_motor, T,
+                        {gen_server, cast, [?SERVER, stop_motor]}),
     i2c_servo:setPWM(0, 0, 600),
     i2c_servo:setPWM(1, 0, 150),
-    sharp:detect_obstacle(),
-    {reply, Reply, State};
+    sharp:alarm_obstacle(),
+    {reply, ok, State#state{requestor=Requestor}};
 
 
-handle_call({backward, T}, _From, State) ->
+handle_call({backward, T, Requestor}, _From, State) ->
     timer:sleep(10),
+    chronos:start_timer(motor_ts, stop_motor, T,
+                        {gen_server, cast, [?SERVER, stop_motor]}),
     i2c_servo:setPWM(0,0,150),
     i2c_servo:setPWM(1,0,600),
-    timer:sleep(T),
-    motor_stop(),
-    Reply = ok,
-    {reply, Reply, State};
+    {reply, ok, State#state{requestor=Requestor}};
 
-handle_call({rotate, T, left}, _From, State) ->
-    motor_rotate(T, left),
-    Reply = ok,
-    {reply, Reply, State};
+handle_call({rotate, T, left, Requestor}, _From, State) ->
+    timer:sleep(10),
+    chronos:start_timer(motor_ts, stop_motor, T,
+                        {gen_server, cast, [?SERVER, stop_motor]}),
+    i2c_servo:setPWM(0, 0, 150),
+    i2c_servo:setPWM(1, 0, 150),
+    {reply, ok, State#state{requestor=Requestor}};
 
-handle_call({rotate, T, right}, _From, State) ->
-    Reply = motor_rotate(T, right),
-    {reply, Reply, State};
+handle_call({rotate, T, right, Requestor}, _From, State) ->
+    timer:sleep(10),
+    chronos:start_timer(motor_ts, stop_motor, T,
+                        {gen_server, cast, [?SERVER, stop_motor]}),
+    i2c_servo:setPWM(0, 0, 600),
+    i2c_servo:setPWM(1, 0, 600),
+    {reply, ok, State#state{requestor=Requestor}};
 
 handle_call(stop, _From, #position{actions=[Next|Actions]}=State) ->
     motor_stop(),
@@ -141,8 +148,9 @@ update_state({set, theta, V}, S) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_cast({cast, stop}, State) ->
-    {stop, normal, State}.
+handle_cast(stop_motor, #state{requestor=Requestor}=State) ->
+    Requestor ! motor_action_complete,
+    {stop, normal, #state{requestor=undefined}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -154,8 +162,8 @@ handle_cast({cast, stop}, State) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_info({detect_obstacle, true}, State) ->
-    {ok, Timer} = chronos:stop_timer(motor_timer, stop_timer),
+handle_info(obstacle_present, State) ->
+    {ok, TimeLeft} = chronos:stop_timer(motor_timer, stop_timer),
     motor_stop(),
     {noreply, State}.
 
@@ -193,9 +201,9 @@ motor_forward(T) ->
     chronos:start_timer(motor_timer, stop_motor, T, {motor, stop, []}),
     i2c_servo:setPWM(0,0,600),
     i2c_servo:setPWM(1,0,150),
-    sharp:detect_obstacle().
+    sharp:alarm_obstacle().
 %%    receive
-%%	{detect_obstacle, true} ->
+%%	{alarm_obstacle, true} ->
 %%	    motor_stop(),
 %%	    T2 = now(),
 %%	    trunc(timer:now_diff(T2, T1) * 0.001)
