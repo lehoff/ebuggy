@@ -1,22 +1,22 @@
--module(sharp).
+-module(motor).
 
 -behaviour(gen_server).
 
 %% API
--export([start_link/0, stop/0, read/0, alarm_obstacle/3]).
+-export([start_link/0, stop_server/0]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
 	 terminate/2, code_change/3]).
 
+-export([forward/1, backward/1, rotate/2, stop/0]).
+
 -define(SERVER, ?MODULE). 
 
--define(SPICHANNEL, spi1).
--define(SPIMODE, 0).
--define(SPIBPW, 8).
--define(SPISPEED, 9600).
--define(SPIDELAY, 10).
+-define(D90, 535). %% 90 degrees in milliseconds
+-define(D180, 1222). %% 180 degrees in milliseconds
 
+-record(state, {from = none, timeout = 0}).
 
 %%%===================================================================
 %%% API
@@ -32,15 +32,22 @@
 start_link() ->
     gen_server:start_link({local, ?SERVER}, ?MODULE, [], []).
 
+forward(T) ->
+    gen_server:call(?SERVER, {forward, T}, infinity).
+
+backward(T) ->
+    gen_server:call(?SERVER, {backward, T}, infinity).
+
+rotate(T, left) ->
+    gen_server:call(?SERVER, {rotate, T, left}, infinity);
+rotate(T, right) ->
+    gen_server:call(?SERVER, {rotate, T, right}, infinity).
+
 stop() ->
-    gen_server:cast(?SERVER, stop).
+    gen_server:call(?SERVER, stop).
 
-read() ->
-    gen_server:call(?SERVER, {call, read}).
-
-alarm_obstacle(Mod, Func, Arg) ->
-    gen_server:cast(?SERVER, {cast, alarm_obstacle, Mod, Func, Arg}).
-
+stop_server() ->
+    gen_server:cast(?SERVER, {cast, stop_server}).
 %%%===================================================================
 %%% gen_server callbacks
 %%%===================================================================
@@ -57,9 +64,11 @@ alarm_obstacle(Mod, Func, Arg) ->
 %% @end
 %%--------------------------------------------------------------------
 init([]) ->
-    spi:start_link({?SPICHANNEL, "/dev/spidev0.0"}),   
-    spi:config(?SPICHANNEL, ?SPIMODE, ?SPIBPW, ?SPISPEED, ?SPIDELAY),
-    {ok, []}.
+    i2c_servo:init(),
+    i2c_servo:setPWMFreq(60),
+    application:start(gproc),
+    chronos:start_link(motor_timer),
+    {ok, #state{}}.
 
 %%--------------------------------------------------------------------
 %% @private
@@ -75,9 +84,43 @@ init([]) ->
 %%                                   {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_call({call, read}, _From, State) ->
-    Reply = read_distance(),
-    {reply, Reply, State}.
+
+handle_call({forward, T}, From, _State) ->
+    chronos:start_timer(motor_timer, stop_motor, T, {motor, stop, []}),
+    motor_forward(),
+    NewState = #state{from = From, timeout = T},
+    {noreply, NewState};
+
+handle_call({backward, T}, From, _State) ->
+    chronos:start_timer(motor_timer, stop_motor, T, {motor, stop, []}),
+    motor_backward(),
+    NewState = #state{from = From, timeout = T},
+    {noreply, NewState};
+
+handle_call({rotate, T, left}, From, _State) ->
+    chronos:start_timer(motor_timer, stop_motor, T, {motor, stop, []}),
+    motor_rotate(left),
+    NewState = #state{from = From, timeout = T},
+    {noreply, NewState};
+
+handle_call({rotate, T, right}, From, _State) ->
+    chronos:start_timer(motor_timer, stop_motor, T, {motor, stop, []}),
+    motor_rotate(right),
+    NewState = #state{from = From, timeout = T},
+    {noreply, NewState};
+
+handle_call(stop, _From, State) ->
+    motor_stop(),
+    case chronos:stop_timer(motor_timer, stop_motor) of
+	not_running ->
+	    gen_server:reply(State#state.from, State#state.timeout);	    
+	{ok, T} ->
+	    gen_server:reply(State#state.from, T)
+    end,
+    NewState = #state{from = none, timeout = 0},
+    Reply = ok,
+    {reply, Reply, NewState}.
+    
 
 %%--------------------------------------------------------------------
 %% @private
@@ -89,12 +132,7 @@ handle_call({call, read}, _From, State) ->
 %%                                  {stop, Reason, State}
 %% @end
 %%--------------------------------------------------------------------
-handle_cast({cast, alarm_obstacle, Mod, Func, Arg}, State) ->
-    wait_obstacle(read_distance()),
-    apply(Mod, Func, Arg),
-    {noreply, State};
-
-handle_cast(stop, State) ->
+handle_cast({cast, stop_server}, State) ->
     {stop, normal, State}.
 
 %%--------------------------------------------------------------------
@@ -139,22 +177,25 @@ code_change(_OldVsn, State, _Extra) ->
 %%% Internal functions
 %%%===================================================================
 
-read_distance() ->
-    {_, Val1, Val2} = spi:transfer(?SPICHANNEL, {1, 2 bsl 6, 0}, 3),
-    Value = ((Val1 band 31) bsl 6) + (Val2 bsr 2),
-    Volts = Value * (3.3 / 1024),
-    case Volts < 0.2 of
-	true ->
-	    {error, out_of_range};
-	false ->
-	    41.543 * math:pow(Volts + 0.30221, -1.5281) 
-    end.
+motor_forward() ->
+    timer:sleep(10),
+    i2c_servo:setPWM(0,0,600),
+    i2c_servo:setPWM(1,0,150).
 
-wait_obstacle({error, out_of_range}) ->
+motor_backward() ->
     timer:sleep(10),
-    wait_obstacle(read_distance());
-wait_obstacle(Distance) when Distance =< 6.5 ->
-    true;
-wait_obstacle(_Distance) ->
+    i2c_servo:setPWM(0,0,150),
+    i2c_servo:setPWM(1,0,600).
+
+motor_rotate(left) ->
     timer:sleep(10),
-    wait_obstacle(read_distance()).
+    i2c_servo:setPWM(0,0,150),
+    i2c_servo:setPWM(1,0,150);
+motor_rotate(right) ->
+    timer:sleep(10),
+    i2c_servo:setPWM(0,0,600),
+    i2c_servo:setPWM(1,0,600).
+
+motor_stop() ->
+    i2c_servo:setPWM(0,0,0),
+    i2c_servo:setPWM(1,0,0).

@@ -1,6 +1,7 @@
 -module(compass_xloborg).
 
--compile(export_all).
+-export([init/0,
+         read/0]).
 
 -define(I2C_CHANNEL, i2c1).
 -define(ADDR, 16#0e).
